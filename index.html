@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Where Am I? - Accessible Location Map</title>
+    <meta name="description" content="Get detailed descriptions of your current location with accessibility information">
+    
+    <!-- Mobile web app capable -->
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    
+    <!-- Stylesheets -->
+    <link rel="stylesheet" href="styles/main.css">
+    
+    <!-- Favicon -->
+    <link rel="icon" type="image/x-icon" href="favicon.ico">
+</head>
+<body>
+    <!-- Map container (full screen) -->
+    <div class="map-container" id="map-container">
+        <svg id="map-svg" width="100%" height="100%" viewBox="0 0 800 600">
+            <g id="tile-container"></g>
+            <g id="overlay-container"></g>
+            <g id="user-location" style="display: none;">
+                <circle r="8" fill="#4285f4" stroke="white" stroke-width="2"/>
+                <circle r="20" fill="#4285f4" fill-opacity="0.3"/>
+            </g>
+        </svg>
+    </div>
+    
+    <!-- Top bar with hamburger menu -->
+    <header class="top-bar">
+        <button id="menu-toggle" class="menu-button" aria-label="Menu" aria-expanded="false">
+            <span class="hamburger-icon"></span>
+        </button>
+        <h1 class="app-title">Where Am I?</h1>
+        <div class="status-indicators">
+            <span id="gps-status" class="status" aria-live="polite">GPS: Off</span>
+            <span id="compass-status" class="status" aria-live="polite">Compass: Off</span>
+        </div>
+    </header>
+    
+    <!-- Slide-out menu -->
+    <nav id="slide-menu" class="slide-menu" aria-label="Main navigation">
+        <div class="menu-content">
+            <!-- Location mode toggle -->
+            <section class="menu-section">
+                <h2>Location Mode</h2>
+                <button id="toggle-location" class="menu-button-full">
+                    <span class="button-icon">🔄</span>
+                    <span class="button-text">Switch to Real GPS</span>
+                </button>
+            </section>
+            
+            <!-- Settings -->
+            <section class="menu-section">
+                <h2>Settings</h2>
+                
+                <div class="setting-group">
+                    <label class="toggle-setting">
+                        <input type="checkbox" id="show-description" checked>
+                        <span>Show Description Panel</span>
+                    </label>
+                </div>
+                
+                <div class="setting-group">
+                    <label class="toggle-setting">
+                        <input type="checkbox" id="voice-enabled" checked>
+                        <span>Voice Announcements</span>
+                    </label>
+                </div>
+                
+                <div class="setting-group">
+                    <label class="toggle-setting">
+                        <input type="checkbox" id="auto-update" checked>
+                        <span>Auto-update Location</span>
+                    </label>
+                </div>
+                
+                <fieldset class="setting-group">
+                    <legend>Description Detail</legend>
+                    <label class="radio-option">
+                        <input type="radio" name="detail-level" value="brief">
+                        <span>Brief</span>
+                    </label>
+                    <label class="radio-option">
+                        <input type="radio" name="detail-level" value="standard" checked>
+                        <span>Standard</span>
+                    </label>
+                    <label class="radio-option">
+                        <input type="radio" name="detail-level" value="detailed">
+                        <span>Detailed</span>
+                    </label>
+                </fieldset>
+                
+                <fieldset class="setting-group" id="simulated-compass-group">
+                    <legend>Compass Mode</legend>
+                    <label class="toggle-setting">
+                        <input type="checkbox" id="use-simulated-compass">
+                        <span>Use Simulated Compass</span>
+                    </label>
+                    <div id="simulated-direction-wrapper" style="margin-top: 10px; display: none;">
+                        <label for="simulated-direction" style="display: block; margin-bottom: 5px; font-size: 0.875rem;">Direction:</label>
+                        <select id="simulated-direction" class="setting-select">
+                            <option value="0">North</option>
+                            <option value="45">Northeast</option>
+                            <option value="90">East</option>
+                            <option value="135">Southeast</option>
+                            <option value="180">South</option>
+                            <option value="225">Southwest</option>
+                            <option value="270">West</option>
+                            <option value="315">Northwest</option>
+                        </select>
+                    </div>
+                </fieldset>
+            </section>
+            
+            <!-- Search -->
+            <section class="menu-section">
+                <h2>Search Location</h2>
+                <div class="search-container">
+                    <input type="text" id="location-search" placeholder="Enter address or place...">
+                    <button id="search-button" class="search-btn">Search</button>
+                </div>
+            </section>
+        </div>
+    </nav>
+    
+    <!-- Always visible action buttons -->
+    <div class="action-buttons">
+        <button id="update-location" class="action-btn primary" aria-label="Update location">
+            <span class="btn-icon">📍</span>
+            <span class="btn-text">Update</span>
+        </button>
+        <button id="speak-location" class="action-btn" aria-label="Speak location">
+            <span class="btn-icon">🔊</span>
+            <span class="btn-text">Speak</span>
+        </button>
+    </div>
+    
+    <!-- Map zoom controls -->
+    <div class="map-controls">
+        <button id="zoom-in" class="map-btn" aria-label="Zoom in">+</button>
+        <button id="zoom-out" class="map-btn" aria-label="Zoom out">−</button>
+        <button id="center-location" class="map-btn" aria-label="Center on location">⊕</button>
+    </div>
+    
+    <!-- Floating description panel -->
+    <div id="description-panel" class="description-panel" role="region" aria-live="polite">
+        <div class="description-header">
+            <h2 id="location-title">Getting location...</h2>
+            <button id="close-description" class="close-btn" aria-label="Close description">×</button>
+        </div>
+        <div class="description-content">
+            <p id="location-summary">Please wait while we determine your location.</p>
+            <div id="location-details" class="details"></div>
+        </div>
+        <div class="description-footer">
+            <span id="direction-indicator" class="direction">Direction unavailable</span>
+            <button id="share-location" class="share-btn" aria-label="Share location">
+                <span aria-hidden="true">↗️</span> Share
+            </button>
+        </div>
+    </div>
+    
+    <!-- Scripts -->
+    <script type="module" src="src/app.js"></script>
+</body>
+</html>
