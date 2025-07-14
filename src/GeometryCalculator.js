@@ -281,4 +281,110 @@ export class GeometryCalculator {
         
         return this.pointToPolygonDistance(point, polygon) <= threshold;
     }
+    
+    /**
+     * Determine which side of a line segment a point is on
+     * @param {Object} point - {x, y}
+     * @param {Object} lineStart - {x, y}
+     * @param {Object} lineEnd - {x, y}
+     * @returns {string} 'left', 'right', or 'on' relative to direction from start to end
+     */
+    sideOfLine(point, lineStart, lineEnd) {
+        // Calculate cross product to determine side
+        const d = (lineEnd.x - lineStart.x) * (point.y - lineStart.y) - 
+                  (lineEnd.y - lineStart.y) * (point.x - lineStart.x);
+        
+        if (Math.abs(d) < 0.0001) return 'on';
+        // In SVG coordinates, Y increases downward, so we need to invert
+        return d > 0 ? 'right' : 'left';
+    }
+    
+    /**
+     * Find the closest point on a polyline and which side the user is on
+     * @param {Object} point - {x, y}
+     * @param {Array<Object>} polyline - Array of {x, y} points
+     * @returns {Object} {closestPoint, segmentIndex, side, distance}
+     */
+    closestPointOnPolyline(point, polyline) {
+        if (polyline.length === 0) return null;
+        if (polyline.length === 1) {
+            return {
+                closestPoint: polyline[0],
+                segmentIndex: 0,
+                side: 'on',
+                distance: this.pointToPointDistance(point, polyline[0])
+            };
+        }
+        
+        let minDistance = Infinity;
+        let result = null;
+        
+        // Check each segment
+        for (let i = 0; i < polyline.length - 1; i++) {
+            const lineStart = polyline[i];
+            const lineEnd = polyline[i + 1];
+            
+            // Find closest point on this segment
+            const dx = lineEnd.x - lineStart.x;
+            const dy = lineEnd.y - lineStart.y;
+            
+            let t = 0;
+            if (dx !== 0 || dy !== 0) {
+                t = Math.max(0, Math.min(1, 
+                    ((point.x - lineStart.x) * dx + (point.y - lineStart.y) * dy) / 
+                    (dx * dx + dy * dy)
+                ));
+            }
+            
+            const closestPoint = {
+                x: lineStart.x + t * dx,
+                y: lineStart.y + t * dy
+            };
+            
+            const distance = this.pointToPointDistance(point, closestPoint);
+            
+            if (distance < minDistance) {
+                minDistance = distance;
+                const side = this.sideOfLine(point, lineStart, lineEnd);
+                
+                result = {
+                    closestPoint: closestPoint,
+                    segmentIndex: i,
+                    side: side,
+                    distance: distance,
+                    t: t // Position along segment (0-1)
+                };
+            }
+        }
+        
+        return result;
+    }
+    
+    /**
+     * Convert bearing to compass direction
+     * @param {number} bearing - Bearing in degrees (0-360)
+     * @returns {string} Compass direction (e.g., 'north', 'northeast', etc.)
+     */
+    bearingToCompassDirection(bearing) {
+        const directions = ['north', 'northeast', 'east', 'southeast', 
+                          'south', 'southwest', 'west', 'northwest'];
+        const index = Math.round(bearing / 45) % 8;
+        return directions[index];
+    }
+    
+    /**
+     * Get the general compass direction of a polyline
+     * @param {Array<Object>} polyline - Array of {x, y} points
+     * @returns {string} Primary compass direction of the polyline
+     */
+    getPolylineDirection(polyline) {
+        if (polyline.length < 2) return null;
+        
+        // Calculate overall direction from start to end
+        const start = polyline[0];
+        const end = polyline[polyline.length - 1];
+        const bearing = this.bearing(start, end);
+        
+        return this.bearingToCompassDirection(bearing);
+    }
 }

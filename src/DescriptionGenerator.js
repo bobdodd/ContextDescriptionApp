@@ -296,10 +296,68 @@ export class DescriptionGenerator {
                 summary = `You are at the intersection of ${names.join(', ')} and ${lastRoad}`;
             }
         } else if (uniqueRoadNames.length === 1) {
-            // On a single street
+            // On a single street - determine which side and street direction
             const baseName = uniqueRoadNames[0];
             const cleanName = baseName.replace(/\s+(Street|Road|Avenue|Ave|St|Rd|Drive|Dr|Boulevard|Blvd)$/i, '');
-            summary = `You are on ${cleanName}`;
+            
+            // Get the first road element from this group
+            const roadGroup = roadGroups.get(baseName);
+            if (roadGroup && roadGroup.length > 0) {
+                const roadElement = roadGroup[0];
+                
+                // Get the geometry for side calculation
+                if (roadElement.geometry && roadElement.geometry.type === 'polyline') {
+                    // We need to find which tile this road is in to get correct SVG coords
+                    let userPoint = null;
+                    
+                    // Find the tile that contains this road element
+                    for (const [tileKey, tileGroup] of tiles) {
+                        if (tileGroup.contains(roadElement.element)) {
+                            const [tileLat, tileLng] = tileKey.split('_').map(parseFloat);
+                            // Recalculate SVG coordinates for this tile
+                            const tileX = ((area.center.lng - tileLng) / 0.01) * 1000;
+                            const tileY = ((tileLat + 0.01 - area.center.lat) / 0.01) * 1000;
+                            userPoint = { x: tileX, y: tileY };
+                            break;
+                        }
+                    }
+                    
+                    if (userPoint) {
+                        const polyline = roadElement.geometry.points;
+                        
+                        // Find which side of the street we're on
+                        const closestInfo = this.geometryCalculator.closestPointOnPolyline(userPoint, polyline);
+                        
+                        // Get the street's compass direction
+                        const streetDirection = this.geometryCalculator.getPolylineDirection(polyline);
+                        
+                        if (closestInfo && streetDirection) {
+                            // Get the angle at the closest point to determine absolute side
+                            const segmentBearing = this.geometryCalculator.bearing(
+                                polyline[closestInfo.segmentIndex],
+                                polyline[closestInfo.segmentIndex + 1]
+                            );
+                            
+                            // Determine the side description based on the street's primary orientation
+                            const sideDescription = this.getStreetSideDescription(
+                                closestInfo.side, 
+                                segmentBearing,
+                                streetDirection
+                            );
+                            
+                            summary = `You are on the ${sideDescription} side of ${cleanName}`;
+                        } else {
+                            summary = `You are on ${cleanName}`;
+                        }
+                    } else {
+                        summary = `You are on ${cleanName}`;
+                    }
+                } else {
+                    summary = `You are on ${cleanName}`;
+                }
+            } else {
+                summary = `You are on ${cleanName}`;
+            }
         } else {
             // No streets found
             summary = `Location: ${area.center.lat.toFixed(4)}, ${area.center.lng.toFixed(4)}`;
@@ -2216,6 +2274,50 @@ export class DescriptionGenerator {
                           'south', 'southwest', 'west', 'northwest'];
         const index = Math.round(heading / 45) % 8;
         return directions[index];
+    }
+    
+    /**
+     * Get street side description using common parlance
+     * For N-S streets: use "east" or "west" side
+     * For E-W streets: use "north" or "south" side
+     * For diagonal streets: use the primary cardinal direction
+     */
+    getStreetSideDescription(side, segmentBearing, streetDirection) {
+        if (side === 'on') return 'middle';
+        
+        // Normalize bearing to 0-360
+        const bearing = (segmentBearing + 360) % 360;
+        
+        // Determine if street is primarily N-S, E-W, or diagonal
+        const isNorthSouth = (bearing >= 337.5 || bearing < 22.5) || (bearing >= 157.5 && bearing < 202.5);
+        const isEastWest = (bearing >= 67.5 && bearing < 112.5) || (bearing >= 247.5 && bearing < 292.5);
+        
+        if (isNorthSouth) {
+            // For north-south streets, use east/west
+            if (side === 'left') {
+                // If facing north, left is west; if facing south, left is east
+                return (bearing < 90 || bearing > 270) ? 'west' : 'east';
+            } else {
+                return (bearing < 90 || bearing > 270) ? 'east' : 'west';
+            }
+        } else if (isEastWest) {
+            // For east-west streets, use north/south
+            if (side === 'left') {
+                // If facing east (~90°), left is north; if facing west (~270°), left is south
+                return (bearing >= 45 && bearing < 135) ? 'north' : 'south';
+            } else {
+                return (bearing >= 45 && bearing < 135) ? 'south' : 'north';
+            }
+        } else {
+            // For diagonal streets, calculate the perpendicular angle and determine cardinal direction
+            const perpendicularAngle = side === 'left' ? (bearing - 90 + 360) % 360 : (bearing + 90) % 360;
+            
+            // Convert to cardinal direction
+            if (perpendicularAngle >= 315 || perpendicularAngle < 45) return 'north';
+            else if (perpendicularAngle >= 45 && perpendicularAngle < 135) return 'east';
+            else if (perpendicularAngle >= 135 && perpendicularAngle < 225) return 'south';
+            else return 'west';
+        }
     }
     
     /**
