@@ -19,7 +19,7 @@ export class MapManager extends EventTarget {
         
         // Loaded tiles cache
         this.loadedTiles = new Map();
-        this.tileSize = 800; // SVG units per tile (matching tile SVG dimensions)
+        this.tileSize = 1000; // SVG units per tile (matching tile SVG viewBox="0 0 1000 1000")
         
         // Interaction state
         this.isDragging = false;
@@ -110,9 +110,8 @@ export class MapManager extends EventTarget {
     latToPixel(lat) {
         // Simple linear projection for small areas
         // Each tile is 0.01 degrees, so 100 tiles per degree
-        // Use a scale factor based on zoom level
-        const scale = Math.pow(2, this.zoom - 16);
-        return -lat * 100 * this.tileSize * scale;
+        // Don't apply zoom scale here - it's handled in viewBox
+        return -lat * 100 * this.tileSize;
     }
     
     /**
@@ -120,24 +119,24 @@ export class MapManager extends EventTarget {
      */
     lngToPixel(lng) {
         // Simple linear projection for small areas
-        const scale = Math.pow(2, this.zoom - 16);
-        return lng * 100 * this.tileSize * scale;
+        // Don't apply zoom scale here - it's handled in viewBox
+        return lng * 100 * this.tileSize;
     }
     
     /**
      * Convert pixel to latitude
      */
     pixelToLat(y) {
-        const scale = Math.pow(2, this.zoom - 16);
-        return -y / (100 * this.tileSize * scale);
+        // Don't apply zoom scale here - it's handled in viewBox
+        return -y / (100 * this.tileSize);
     }
     
     /**
      * Convert pixel to longitude
      */
     pixelToLng(x) {
-        const scale = Math.pow(2, this.zoom - 16);
-        return x / (100 * this.tileSize * scale);
+        // Don't apply zoom scale here - it's handled in viewBox
+        return x / (100 * this.tileSize);
     }
     
     /**
@@ -218,18 +217,14 @@ export class MapManager extends EventTarget {
                 tileGroup.setAttribute('data-tile', key);
                 
                 // Calculate tile position and size
-                const scale = Math.pow(2, this.zoom - 16);
-                const tileWorldSize = this.TILE_DEGREE_SIZE * 100 * this.tileSize * scale;
+                // Don't apply zoom scale here - it's handled in viewBox
+                const tileWorldSize = this.TILE_DEGREE_SIZE * 100 * this.tileSize;
                 
                 // Position tile at its bottom-left corner
                 // Since latitude increases upward but SVG Y increases downward,
                 // we position at the higher latitude (which is a smaller Y value)
                 const x = this.lngToPixel(tile.lng);
                 const y = this.latToPixel(tile.lat + this.TILE_DEGREE_SIZE);
-                
-                // Debug: Try adjusting for potential tile offset
-                // It appears tiles might be shifted - let's test
-                const tileOffset = 0; // We can adjust this if needed
                 
                 // Tiles are 1000 SVG units (based on viewBox="0 0 1000 1000")
                 const tileScale = tileWorldSize / 1000;
@@ -289,9 +284,11 @@ export class MapManager extends EventTarget {
     handleMouseMove(event) {
         if (!this.isDragging) return;
         
-        const scale = Math.pow(2, this.zoom - 16);
-        const dx = (event.clientX - this.dragStart.x) / scale;
-        const dy = (event.clientY - this.dragStart.y) / scale;
+        // Get current scale from viewBox
+        const currentViewBox = this.svg.getAttribute('viewBox').split(' ').map(Number);
+        const currentScale = currentViewBox[2] / this.viewBox.width;
+        const dx = (event.clientX - this.dragStart.x) * currentScale;
+        const dy = (event.clientY - this.dragStart.y) * currentScale;
         
         // Update center
         const newCenterX = this.lngToPixel(this.center.lng) - dx;
@@ -378,6 +375,13 @@ export class MapManager extends EventTarget {
      * Zoom in
      */
     zoomIn() {
+        // If we have a marker location, center on it while zooming
+        if (this.markerLocation) {
+            this.center = { 
+                lat: this.markerLocation.lat, 
+                lng: this.markerLocation.lng 
+            };
+        }
         this.setZoom(this.zoom + 1);
     }
     
@@ -385,6 +389,13 @@ export class MapManager extends EventTarget {
      * Zoom out
      */
     zoomOut() {
+        // If we have a marker location, center on it while zooming
+        if (this.markerLocation) {
+            this.center = { 
+                lat: this.markerLocation.lat, 
+                lng: this.markerLocation.lng 
+            };
+        }
         this.setZoom(this.zoom - 1);
     }
     
@@ -472,18 +483,14 @@ export class MapManager extends EventTarget {
             this.locationMarker.remove();
         }
         
-        // Store the location for redraws
+        // Store the actual location for centering
         this.markerLocation = { lat, lng };
         
-        // Calculate position in map coordinates
-        const x = this.lngToPixel(lng);
-        const y = this.latToPixel(lat);
-        
-        // Apply the exact offsets determined by clicking on the actual intersection
-        // The intersection is 0.001725° south and 0.001225° east of the coordinate position
+        // Apply the offset for visual alignment with tiles
         const offsetLat = -0.001725;  // Move south
         const offsetLng = 0.001225;   // Move east
         
+        // Calculate position in map coordinates with offset
         const correctedX = this.lngToPixel(lng + offsetLng);
         const correctedY = this.latToPixel(lat + offsetLat);
         
@@ -492,9 +499,15 @@ export class MapManager extends EventTarget {
         this.locationMarker.setAttribute('id', 'location-marker');
         this.locationMarker.setAttribute('transform', `translate(${correctedX}, ${correctedY})`);
         
-        // Get current zoom scale for pin size
-        const scale = Math.pow(2, this.zoom - 16);
-        const pinScale = 1 / scale; // Keep pin same size regardless of zoom
+        // Calculate pin scale based on current viewBox to keep consistent size
+        const currentViewBox = this.svg.getAttribute('viewBox');
+        let pinScale = 1;
+        if (currentViewBox) {
+            const viewBoxParts = currentViewBox.split(' ').map(Number);
+            const viewBoxWidth = viewBoxParts[2];
+            const baseWidth = this.viewBox.width;
+            pinScale = viewBoxWidth / baseWidth;
+        }
         
         // Create scaled group for pin
         const pinGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
@@ -582,9 +595,13 @@ export class MapManager extends EventTarget {
         // Change cursor
         event.target.style.cursor = 'grabbing';
         
+        // Store bound functions so we can remove them later
+        this.boundHandlePinDrag = this.handlePinDrag.bind(this);
+        this.boundHandlePinDragEnd = this.handlePinDragEnd.bind(this);
+        
         // Add document-level listeners for drag
-        document.addEventListener('mousemove', this.handlePinDrag.bind(this));
-        document.addEventListener('mouseup', this.handlePinDragEnd.bind(this));
+        document.addEventListener('mousemove', this.boundHandlePinDrag);
+        document.addEventListener('mouseup', this.boundHandlePinDragEnd);
     }
     
     /**
@@ -604,10 +621,9 @@ export class MapManager extends EventTarget {
         const dx = svgP.x - this.pinDragStart.svgX;
         const dy = svgP.y - this.pinDragStart.svgY;
         
-        // Convert movement to lat/lng
-        const scale = Math.pow(2, this.zoom - 16);
-        const dLat = -dy / (100 * this.tileSize * scale);
-        const dLng = dx / (100 * this.tileSize * scale);
+        // Convert movement to lat/lng (no zoom scale needed)
+        const dLat = -dy / (100 * this.tileSize);
+        const dLng = dx / (100 * this.tileSize);
         
         // Update marker position
         const newLat = this.pinDragStart.markerLat + dLat;
@@ -632,11 +648,14 @@ export class MapManager extends EventTarget {
         }
         
         // Remove document-level listeners
-        document.removeEventListener('mousemove', this.handlePinDrag.bind(this));
-        document.removeEventListener('mouseup', this.handlePinDragEnd.bind(this));
+        // Note: We need to remove the exact same function reference that was added
+        // The bind() creates a new function each time, so we need to store the reference
+        document.removeEventListener('mousemove', this.boundHandlePinDrag);
+        document.removeEventListener('mouseup', this.boundHandlePinDragEnd);
         
         // Notify app of final location
         if (this.markerLocation) {
+            console.log('Pin drag ended, dispatching locationChanged event:', this.markerLocation);
             this.dispatchEvent(new CustomEvent('locationChanged', {
                 detail: {
                     lat: this.markerLocation.lat,

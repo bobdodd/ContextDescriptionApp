@@ -37,6 +37,8 @@ class WhereAmIApp {
             defaultCenter: { lat: 43.65, lng: -79.38 }, // Toronto
             testLocation: { lat: 43.6486, lng: -79.3782 }, // Yonge & Front intersection
             defaultZoom: 16, // Standard zoom level
+            minZoom: 10, // Minimum zoom level (zoomed out)
+            maxZoom: 20, // Maximum zoom level (zoomed in)
             updateDistanceThreshold: 10, // meters
             updateHeadingThreshold: 30, // degrees
             descriptionRadius: 100, // meters for immediate area
@@ -121,6 +123,15 @@ class WhereAmIApp {
         this.mapManager.addEventListener('locationChanged', (event) => {
             this.handleManualLocationChange(event.detail);
         });
+        
+        // Keyboard events
+        document.addEventListener('keydown', (event) => {
+            // Stop speech on Escape key
+            if (event.key === 'Escape' && window.speechSynthesis) {
+                window.speechSynthesis.cancel();
+                this.uiController.showSuccess('Speech stopped');
+            }
+        });
     }
     
     /**
@@ -201,7 +212,7 @@ class WhereAmIApp {
         if (shouldUpdate) {
             this.currentLocation = location;
             
-            // Update map position
+            // Update map position to the actual location
             this.mapManager.setCenter(location.lat, location.lng);
             
             // Load tiles for area
@@ -249,7 +260,6 @@ class WhereAmIApp {
      * Preload tiles around current location
      */
     async preloadAreaTiles(location) {
-        console.log(`Preloading tiles for location: ${location.lat}, ${location.lng}`);
         const bounds = {
             north: location.lat + 0.005,
             south: location.lat - 0.005,
@@ -257,7 +267,6 @@ class WhereAmIApp {
             west: location.lng - 0.005
         };
         
-        console.log('Tile bounds:', bounds);
         await this.tileLoader.preloadArea(bounds, true);
     }
     
@@ -277,8 +286,15 @@ class WhereAmIApp {
             const options = this.uiController.getDescriptionOptions();
             
             // Generate description for current location
+            // Apply the same offset as the visual pin to match tile alignment
+            const offsetLat = -0.001725;  // Move south (same as pin offset)
+            const offsetLng = 0.001225;   // Move east (same as pin offset)
+            
             const area = {
-                center: this.currentLocation,
+                center: {
+                    lat: this.currentLocation.lat + offsetLat,
+                    lng: this.currentLocation.lng + offsetLng
+                },
                 radius: this.config.descriptionRadius,
                 heading: this.currentHeading || 0 // Default to north if no heading
             };
@@ -287,9 +303,7 @@ class WhereAmIApp {
             options.maxDistance = this.config.maxDescriptionDistance;
             options.distanceZones = this.config.distanceZones;
             
-            console.log('Generating description with area:', area);
             const description = await this.descriptionGenerator.generateDescription(area, options);
-            console.log('Generated description:', description);
             
             // Add current address/intersection info
             const intersection = await this.findNearestIntersection();
@@ -309,6 +323,7 @@ class WhereAmIApp {
             }
         } catch (error) {
             console.error('Failed to generate description:', error);
+            console.error('Error details:', error.stack);
             this.uiController.showError('Unable to describe this location');
         }
     }
@@ -389,15 +404,26 @@ class WhereAmIApp {
             announcement += `${description.summary}. `;
         }
         
-        // Add all sections
+        // Add all sections with pauses between distance rings
         if (description.sections && description.sections.length > 0) {
-            description.sections.forEach(section => {
+            description.sections.forEach((section, index) => {
                 if (section.content) {
+                    // Add section heading for context (optional, but helps with understanding)
+                    if (section.heading && section.heading.includes('meters')) {
+                        announcement += section.heading + ': ';
+                    }
+                    
                     // If content is an array (for directional info), join it
                     if (Array.isArray(section.content)) {
                         announcement += section.content.join('. ') + '. ';
                     } else {
                         announcement += section.content + '. ';
+                    }
+                    
+                    // Add a pause between distance rings (represented by period and space)
+                    // The speech synthesizer will naturally pause at periods
+                    if (index < description.sections.length - 1) {
+                        announcement += ' . '; // Extra period creates a longer pause
                     }
                 }
             });
@@ -604,10 +630,11 @@ class WhereAmIApp {
      * Handle manual location change from map interaction
      */
     async handleManualLocationChange(location) {
+        
         // Update current location
         this.currentLocation = location;
         
-        // Update map center to follow the pin
+        // Update map center to the actual location
         this.mapManager.setCenter(location.lat, location.lng);
         
         // Load tiles for the new area
