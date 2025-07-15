@@ -336,8 +336,15 @@ export class MapManager extends EventTarget {
             const svgP = pt.matrixTransform(this.svg.getScreenCTM().inverse());
             
             // Convert to lat/lng
-            const lat = this.pixelToLat(svgP.y);
-            const lng = this.pixelToLng(svgP.x);
+            let lat = this.pixelToLat(svgP.y);
+            let lng = this.pixelToLng(svgP.x);
+            
+            // Reverse the offset that will be applied in updateLocationMarker
+            // This ensures the pin appears exactly where the user clicked
+            const offsetLat = -0.001725;  // Move south
+            const offsetLng = 0.001225;   // Move east
+            lat = lat - offsetLat;  // Subtract the offset to compensate
+            lng = lng - offsetLng;  // Subtract the offset to compensate
             
             // Update marker location
             this.updateLocationMarker(lat, lng);

@@ -101,6 +101,12 @@ export class DescriptionGenerator {
      * Generate flowing, natural language description
      */
     generateFlowingDescription(area, features, zones) {
+        // Store user heading for relative directions
+        this.userHeading = area.heading;
+        
+        // Clear any existing debug crosshairs
+        this.clearDebugCrosshairs();
+        
         // First run the debug to see what we find
         this.debugNearbyElements(area.center);
         
@@ -287,9 +293,24 @@ export class DescriptionGenerator {
                 return 0;
             });
             
+            // Determine which corner of the intersection we're on
+            let cornerDescription = '';
+            if (roadInfo.length === 2) {
+                // For a standard 2-way intersection, determine the corner
+                cornerDescription = this.getIntersectionCorner(
+                    area.center,
+                    roadInfo,
+                    tiles
+                );
+            }
+            
             // Create flowing text
             if (roadInfo.length === 2) {
-                summary = `You are at the intersection of ${roadInfo[0].name} and ${roadInfo[1].name}`;
+                if (cornerDescription) {
+                    summary = `You are on the ${cornerDescription} corner of ${roadInfo[0].name} and ${roadInfo[1].name}`;
+                } else {
+                    summary = `You are at the intersection of ${roadInfo[0].name} and ${roadInfo[1].name}`;
+                }
             } else {
                 const names = roadInfo.map(r => r.name);
                 const lastRoad = names.pop();
@@ -345,7 +366,48 @@ export class DescriptionGenerator {
                                 streetDirection
                             );
                             
+                            // Store current user point for clock position calculations
+                            this.currentUserPoint = userPoint;
+                            
+                            // Find nearest cross streets
+                            const crossStreets = this.findNearestCrossStreets(
+                                userPoint,
+                                roadElement,
+                                closestInfo.segmentIndex,
+                                tiles
+                            );
+                            
+                            // Build a flowing description
                             summary = `You are on the ${sideDescription} side of ${cleanName}`;
+                            
+                            // Add street orientation relative to user if we have heading
+                            if (area.heading !== null && area.heading !== undefined) {
+                                const streetOrientation = this.getStreetOrientationDescription(
+                                    segmentBearing,
+                                    area.heading,
+                                    sideDescription
+                                );
+                                summary += `, ${streetOrientation}`;
+                            }
+                            
+                            summary += '.';
+                            
+                            // Add cross street information as a separate sentence
+                            const crossStreetInfo = this.formatCrossStreetInfo(
+                                crossStreets,
+                                segmentBearing,
+                                streetDirection
+                            );
+                            
+                            if (crossStreetInfo) {
+                                summary += ` ${crossStreetInfo}.`;
+                            }
+                            
+                            // Add facing direction as final sentence
+                            if (area.heading !== null && area.heading !== undefined) {
+                                const direction = this.headingToCardinalDirection(area.heading);
+                                summary += ` You are facing ${direction}.`;
+                            }
                         } else {
                             summary = `You are on ${cleanName}`;
                         }
@@ -361,14 +423,13 @@ export class DescriptionGenerator {
         } else {
             // No streets found
             summary = `Location: ${area.center.lat.toFixed(4)}, ${area.center.lng.toFixed(4)}`;
+            
+            // Add heading if available
+            if (area.heading !== null && area.heading !== undefined) {
+                const direction = this.headingToCardinalDirection(area.heading);
+                summary += `. You are facing ${direction}.`;
+            }
         }
-        
-        // Add heading if available
-        if (area.heading !== null && area.heading !== undefined) {
-            const direction = this.headingToCardinalDirection(area.heading);
-            summary += `, facing ${direction}`;
-        }
-        summary += '.';
         
         // Return minimal structure
         return {
@@ -2274,6 +2335,983 @@ export class DescriptionGenerator {
                           'south', 'southwest', 'west', 'northwest'];
         const index = Math.round(heading / 45) % 8;
         return directions[index];
+    }
+    
+    /**
+     * Get a natural description of the street's orientation relative to the user
+     */
+    getStreetOrientationDescription(streetBearing, userHeading, sideDescription) {
+        // Normalize bearings
+        streetBearing = (streetBearing + 360) % 360;
+        userHeading = (userHeading + 360) % 360;
+        
+        // The street can run in two directions (bearing and bearing + 180)
+        const streetBearing1 = streetBearing;
+        const streetBearing2 = (streetBearing + 180) % 360;
+        
+        // Calculate angle differences
+        let diff1 = streetBearing1 - userHeading;
+        if (diff1 > 180) diff1 -= 360;
+        if (diff1 < -180) diff1 += 360;
+        
+        let diff2 = streetBearing2 - userHeading;
+        if (diff2 > 180) diff2 -= 360;
+        if (diff2 < -180) diff2 += 360;
+        
+        // Use the smaller absolute difference
+        const diff = Math.abs(diff1) < Math.abs(diff2) ? diff1 : diff2;
+        const absDiff = Math.abs(diff);
+        
+        // Determine relative position with simple, natural language
+        if (absDiff < 22.5) {
+            // User is facing along the street
+            return "facing along the street";
+        } else if (absDiff > 157.5) {
+            // User is facing opposite to the street direction
+            return "facing along the street in the opposite direction";
+        } else if (absDiff >= 67.5 && absDiff <= 112.5) {
+            // Street runs perpendicular to user's facing direction
+            // Need to determine if user is facing toward or away from the street
+            // This depends on which side they're on
+            
+            // Determine if street runs E-W or N-S
+            const isEastWest = (streetBearing >= 45 && streetBearing < 135) || 
+                               (streetBearing >= 225 && streetBearing < 315);
+            
+            // Determine if user is facing toward or away from street
+            if (isEastWest) {
+                // Street runs E-W
+                if ((sideDescription === 'south' && userHeading < 90) || 
+                    (sideDescription === 'south' && userHeading > 270) ||
+                    (sideDescription === 'north' && userHeading >= 90 && userHeading <= 270)) {
+                    return "facing the street";
+                } else {
+                    return "facing away from the street";
+                }
+            } else {
+                // Street runs N-S
+                if ((sideDescription === 'west' && userHeading >= 0 && userHeading < 180) ||
+                    (sideDescription === 'east' && userHeading >= 180 && userHeading < 360)) {
+                    return "facing the street";
+                } else {
+                    return "facing away from the street";
+                }
+            }
+        } else {
+            // Street is at an angle
+            if (diff > 0) {
+                if (absDiff < 67.5) {
+                    return "facing diagonally to the street which runs ahead to your right";
+                } else {
+                    return "facing away from the street which runs behind you to the left";
+                }
+            } else {
+                if (absDiff < 67.5) {
+                    return "facing diagonally to the street which runs ahead to your left";
+                } else {
+                    return "facing away from the street which runs behind you to the right";
+                }
+            }
+        }
+    }
+    
+    /**
+     * Get the street's position relative to the user's heading (deprecated)
+     */
+    getStreetRelativePosition(streetBearing, userHeading) {
+        // Normalize bearings
+        streetBearing = (streetBearing + 360) % 360;
+        userHeading = (userHeading + 360) % 360;
+        
+        // The street can run in two directions (bearing and bearing + 180)
+        const streetBearing1 = streetBearing;
+        const streetBearing2 = (streetBearing + 180) % 360;
+        
+        // Calculate angle differences
+        let diff1 = streetBearing1 - userHeading;
+        if (diff1 > 180) diff1 -= 360;
+        if (diff1 < -180) diff1 += 360;
+        
+        let diff2 = streetBearing2 - userHeading;
+        if (diff2 > 180) diff2 -= 360;
+        if (diff2 < -180) diff2 += 360;
+        
+        // Use the smaller absolute difference
+        const diff = Math.abs(diff1) < Math.abs(diff2) ? diff1 : diff2;
+        const absDiff = Math.abs(diff);
+        
+        // Determine relative position
+        if (absDiff < 22.5) {
+            // User is facing along the street
+            return "running straight ahead";
+        } else if (absDiff > 157.5) {
+            // User is facing opposite to the street
+            return "running behind you";
+        } else if (diff > 0) {
+            // Street is to the right
+            if (absDiff < 67.5) {
+                return "running ahead to your right";
+            } else if (absDiff < 112.5) {
+                return "running to your right";
+            } else {
+                return "running behind to your right";
+            }
+        } else {
+            // Street is to the left
+            if (absDiff < 67.5) {
+                return "running ahead to your left";
+            } else if (absDiff < 112.5) {
+                return "running to your left";
+            } else {
+                return "running behind to your left";
+            }
+        }
+    }
+    
+    /**
+     * Determine which corner of an intersection the user is on
+     */
+    getIntersectionCorner(center, roadInfo, tiles) {
+        // We need to determine which quadrant of the intersection we're in
+        // First, find the approximate center of the intersection
+        
+        // Get the two roads
+        const road1 = roadInfo[0];
+        const road2 = roadInfo[1];
+        
+        // For each road, find the closest point to the user
+        let road1Point = null;
+        let road2Point = null;
+        
+        // Process road 1
+        if (road1.group && road1.group.length > 0) {
+            const roadElement = road1.group[0];
+            if (roadElement.geometry && roadElement.geometry.type === 'polyline') {
+                // Find which tile contains this road
+                for (const [tileKey, tileGroup] of tiles) {
+                    if (tileGroup.contains(roadElement.element)) {
+                        const [tileLat, tileLng] = tileKey.split('_').map(parseFloat);
+                        const userX = ((center.lng - tileLng) / 0.01) * 1000;
+                        const userY = ((tileLat + 0.01 - center.lat) / 0.01) * 1000;
+                        const userPoint = { x: userX, y: userY };
+                        
+                        const closestInfo = this.geometryCalculator.closestPointOnPolyline(
+                            userPoint, 
+                            roadElement.geometry.points
+                        );
+                        
+                        if (closestInfo) {
+                            road1Point = {
+                                point: closestInfo.closestPoint,
+                                segmentIndex: closestInfo.segmentIndex,
+                                geometry: roadElement.geometry.points
+                            };
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // Process road 2
+        if (road2.group && road2.group.length > 0) {
+            const roadElement = road2.group[0];
+            if (roadElement.geometry && roadElement.geometry.type === 'polyline') {
+                // Find which tile contains this road
+                for (const [tileKey, tileGroup] of tiles) {
+                    if (tileGroup.contains(roadElement.element)) {
+                        const [tileLat, tileLng] = tileKey.split('_').map(parseFloat);
+                        const userX = ((center.lng - tileLng) / 0.01) * 1000;
+                        const userY = ((tileLat + 0.01 - center.lat) / 0.01) * 1000;
+                        const userPoint = { x: userX, y: userY };
+                        
+                        const closestInfo = this.geometryCalculator.closestPointOnPolyline(
+                            userPoint, 
+                            roadElement.geometry.points
+                        );
+                        
+                        if (closestInfo) {
+                            road2Point = {
+                                point: closestInfo.closestPoint,
+                                segmentIndex: closestInfo.segmentIndex,
+                                geometry: roadElement.geometry.points
+                            };
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        
+        if (!road1Point || !road2Point) {
+            return '';
+        }
+        
+        // Now determine which side of each road we're on
+        const road1Bearing = this.geometryCalculator.bearing(
+            road1Point.geometry[road1Point.segmentIndex],
+            road1Point.geometry[road1Point.segmentIndex + 1]
+        );
+        
+        const road2Bearing = this.geometryCalculator.bearing(
+            road2Point.geometry[road2Point.segmentIndex],
+            road2Point.geometry[road2Point.segmentIndex + 1]
+        );
+        
+        // Determine primary orientations
+        const road1IsNS = road1.isNorthSouth;
+        const road2IsNS = road2.isNorthSouth;
+        
+        // Simple corner determination for perpendicular roads
+        if (road1IsNS && !road2IsNS) {
+            // Road 1 is N-S, Road 2 is E-W
+            // We need the user's position in SVG coordinates
+            const [tileLat, tileLng] = Array.from(tiles.keys())[0].split('_').map(parseFloat);
+            const userX = ((center.lng - tileLng) / 0.01) * 1000;
+            const userY = ((tileLat + 0.01 - center.lat) / 0.01) * 1000;
+            const userSvgPoint = { x: userX, y: userY };
+            
+            // Determine if we're east or west of the N-S road
+            const nsRoadSide = this.getSimpleCardinalSide(userSvgPoint, road1Point.point, road1Bearing, true);
+            // Determine if we're north or south of the E-W road
+            const ewRoadSide = this.getSimpleCardinalSide(userSvgPoint, road2Point.point, road2Bearing, false);
+            
+            return `${ewRoadSide}${nsRoadSide}`;
+        } else if (!road1IsNS && road2IsNS) {
+            // Road 1 is E-W, Road 2 is N-S
+            // We need the user's position in SVG coordinates
+            const [tileLat, tileLng] = Array.from(tiles.keys())[0].split('_').map(parseFloat);
+            const userX = ((center.lng - tileLng) / 0.01) * 1000;
+            const userY = ((tileLat + 0.01 - center.lat) / 0.01) * 1000;
+            const userSvgPoint = { x: userX, y: userY };
+            
+            // Determine if we're north or south of the E-W road
+            const ewRoadSide = this.getSimpleCardinalSide(userSvgPoint, road1Point.point, road1Bearing, false);
+            // Determine if we're east or west of the N-S road
+            const nsRoadSide = this.getSimpleCardinalSide(userSvgPoint, road2Point.point, road2Bearing, true);
+            
+            return `${ewRoadSide}${nsRoadSide}`;
+        }
+        
+        // For non-perpendicular intersections, return empty
+        return '';
+    }
+    
+    /**
+     * Get simple cardinal side for intersection corners
+     */
+    getSimpleCardinalSide(userPoint, roadPoint, roadBearing, isNorthSouth) {
+        // Create a vector from road point to user
+        const dx = userPoint.x - roadPoint.x;
+        const dy = userPoint.y - roadPoint.y;
+        
+        if (isNorthSouth) {
+            // For N-S roads, check if user is east or west
+            return dx > 0 ? 'east' : 'west';
+        } else {
+            // For E-W roads, check if user is north or south
+            // Remember SVG Y increases downward
+            return dy < 0 ? 'north' : 'south';
+        }
+    }
+    
+    /**
+     * Format cross street information using clock positions and relative directions
+     */
+    formatCrossStreetInfo(crossStreets, segmentBearing, streetDirection) {
+        if (!crossStreets.forward && !crossStreets.backward) {
+            return null;
+        }
+        
+        const parts = [];
+        
+        // Get user's heading
+        const userHeading = this.userHeading || 0;
+        
+        // We need the user's position to calculate angles
+        // This should be passed in, but for now we'll use the stored position
+        const userPoint = this.currentUserPoint;
+        
+        if (!userPoint) {
+            // Fallback to simple directions if we don't have user position
+            return this.formatCrossStreetInfoSimple(crossStreets);
+        }
+        
+        // Format forward cross street
+        if (crossStreets.forward) {
+            // Calculate actual bearing from user to cross street
+            const bearing = this.geometryCalculator.bearing(userPoint, crossStreets.forward.point);
+            const clockPosition = this.bearingToClockPosition(bearing, userHeading);
+            
+            if (crossStreets.forward.name === 'dead end') {
+                parts.push(`Dead end ${crossStreets.forward.distance}m at ${clockPosition}`);
+            } else {
+                parts.push(`${crossStreets.forward.name} ${crossStreets.forward.distance}m at ${clockPosition}`);
+            }
+        }
+        
+        // Format backward cross street
+        if (crossStreets.backward) {
+            // Calculate actual bearing from user to cross street
+            const bearing = this.geometryCalculator.bearing(userPoint, crossStreets.backward.point);
+            const clockPosition = this.bearingToClockPosition(bearing, userHeading);
+            
+            if (crossStreets.backward.name === 'dead end') {
+                parts.push(`Dead end ${crossStreets.backward.distance}m at ${clockPosition}`);
+            } else {
+                parts.push(`${crossStreets.backward.name} ${crossStreets.backward.distance}m at ${clockPosition}`);
+            }
+        }
+        
+        if (parts.length === 0) {
+            return null;
+        } else if (parts.length === 1) {
+            return parts[0];
+        } else {
+            return parts.join(', ');
+        }
+    }
+    
+    /**
+     * Convert bearing to clock position based on user heading
+     */
+    bearingToClockPosition(targetBearing, userHeading) {
+        // Normalize bearings
+        targetBearing = (targetBearing + 360) % 360;
+        userHeading = (userHeading + 360) % 360;
+        
+        // Calculate relative angle (0 = straight ahead)
+        let relativeAngle = targetBearing - userHeading;
+        if (relativeAngle < 0) relativeAngle += 360;
+        
+        // Convert to clock position
+        const hour = Math.round(relativeAngle / 30);
+        const clockHour = hour === 0 ? 12 : hour;
+        
+        // Add descriptive text based on position
+        if (clockHour === 12) {
+            return "12 o'clock (straight ahead)";
+        } else if (clockHour === 6) {
+            return "6 o'clock (directly behind)";
+        } else if (clockHour === 3) {
+            return "3 o'clock (to your right)";
+        } else if (clockHour === 9) {
+            return "9 o'clock (to your left)";
+        } else if (clockHour >= 1 && clockHour <= 2) {
+            return `${clockHour} o'clock (ahead to your right)`;
+        } else if (clockHour >= 4 && clockHour <= 5) {
+            return `${clockHour} o'clock (behind to your right)`;
+        } else if (clockHour >= 7 && clockHour <= 8) {
+            return `${clockHour} o'clock (behind to your left)`;
+        } else if (clockHour >= 10 && clockHour <= 11) {
+            return `${clockHour} o'clock (ahead to your left)`;
+        }
+        
+        return `${clockHour} o'clock`;
+    }
+    
+    /**
+     * Simple fallback formatting
+     */
+    formatCrossStreetInfoSimple(crossStreets) {
+        const parts = [];
+        
+        if (crossStreets.forward) {
+            if (crossStreets.forward.name === 'dead end') {
+                parts.push(`Dead end ${crossStreets.forward.distance}m ahead`);
+            } else {
+                parts.push(`${crossStreets.forward.name} ${crossStreets.forward.distance}m ahead`);
+            }
+        }
+        
+        if (crossStreets.backward) {
+            if (crossStreets.backward.name === 'dead end') {
+                parts.push(`Dead end ${crossStreets.backward.distance}m behind`);
+            } else {
+                parts.push(`${crossStreets.backward.name} ${crossStreets.backward.distance}m behind`);
+            }
+        }
+        
+        return parts.join(', ');
+    }
+    
+    /**
+     * Get relative directions based on user heading
+     */
+    getRelativeDirection(streetBearing, userHeading) {
+        // Normalize bearings
+        streetBearing = (streetBearing + 360) % 360;
+        userHeading = (userHeading + 360) % 360;
+        
+        // Calculate angle difference
+        let angleDiff = streetBearing - userHeading;
+        if (angleDiff > 180) angleDiff -= 360;
+        if (angleDiff < -180) angleDiff += 360;
+        
+        // Determine relative directions
+        let forward, backward;
+        
+        // User facing same direction as street
+        if (Math.abs(angleDiff) < 22.5) {
+            forward = "ahead (12 o'clock)";
+            backward = "behind you (6 o'clock)";
+        }
+        // User facing opposite direction
+        else if (Math.abs(angleDiff) > 157.5) {
+            forward = "behind you (6 o'clock)";
+            backward = "ahead (12 o'clock)";
+        }
+        // User facing perpendicular to street
+        else if (angleDiff > 0) {
+            // Street is to the right
+            if (angleDiff < 67.5) {
+                forward = "to your right (1-2 o'clock)";
+                backward = "to your left (7-8 o'clock)";
+            } else if (angleDiff < 112.5) {
+                forward = "to your right (3 o'clock)";
+                backward = "to your left (9 o'clock)";
+            } else {
+                forward = "to your right and behind (4-5 o'clock)";
+                backward = "to your left and ahead (10-11 o'clock)";
+            }
+        } else {
+            // Street is to the left
+            if (angleDiff > -67.5) {
+                forward = "to your left (10-11 o'clock)";
+                backward = "to your right (4-5 o'clock)";
+            } else if (angleDiff > -112.5) {
+                forward = "to your left (9 o'clock)";
+                backward = "to your right (3 o'clock)";
+            } else {
+                forward = "to your left and behind (7-8 o'clock)";
+                backward = "to your right and ahead (1-2 o'clock)";
+            }
+        }
+        
+        return { forward, backward };
+    }
+    
+    /**
+     * Find nearest cross streets in both directions along a street
+     */
+    findNearestCrossStreets(userPoint, roadElement, segmentIndex, tiles) {
+        const result = {
+            forward: null,
+            backward: null
+        };
+        
+        if (!roadElement.geometry || roadElement.geometry.type !== 'polyline') {
+            return result;
+        }
+        
+        const polyline = roadElement.geometry.points;
+        
+        console.log(`\n=== Finding cross streets for ${roadElement.name} ===`);
+        console.log(`Current segment index: ${segmentIndex}, Total points: ${polyline.length}`);
+        
+        // Check forward direction - get the last point of the polyline
+        // Always check, regardless of current segment position
+        const endPoint = polyline[polyline.length - 1];
+        const endDistance = this.geometryCalculator.pointToPointDistance(userPoint, endPoint);
+        const endDistanceInMeters = Math.round(endDistance * 1.11);
+        
+        console.log(`\nForward direction - checking point at end of polyline:`);
+        
+        // Add debug crosshair at this point
+        this.addDebugCrosshair(endPoint, tiles, roadElement, 'forward-crosshair');
+        
+        const forwardRoads = this.findRoadsAtPoint(endPoint, tiles, roadElement);
+        
+        if (forwardRoads.length > 0) {
+            // Prioritize actual roads over paths
+            const actualRoads = forwardRoads.filter(r => !r.isPath);
+            const pathsOnly = forwardRoads.filter(r => r.isPath);
+            
+            if (actualRoads.length > 0) {
+                // Use the first actual road
+                result.forward = {
+                    name: actualRoads[0].name,
+                    distance: endDistanceInMeters,
+                    point: endPoint
+                };
+            } else if (pathsOnly.length > 0) {
+                // Only paths available - describe them properly
+                const path = pathsOnly[0];
+                const pathName = path.name === 'Pedestrian' || path.name === 'unnamed' ? 
+                    'pedestrian path' : path.name;
+                result.forward = {
+                    name: pathName,
+                    distance: endDistanceInMeters,
+                    point: endPoint
+                };
+            }
+        } else {
+            result.forward = {
+                name: 'dead end',
+                distance: endDistanceInMeters,
+                point: endPoint
+            };
+        }
+        
+        // Check backward direction - get the first point of the polyline
+        // Always check, regardless of current segment position
+        const startPoint = polyline[0];
+        const startDistance = this.geometryCalculator.pointToPointDistance(userPoint, startPoint);
+        const startDistanceInMeters = Math.round(startDistance * 1.11);
+        
+        console.log(`\nBackward direction - checking point at start of polyline:`);
+        
+        // Add debug crosshair at this point
+        this.addDebugCrosshair(startPoint, tiles, roadElement, 'backward-crosshair');
+        
+        const backwardRoads = this.findRoadsAtPoint(startPoint, tiles, roadElement);
+        
+        if (backwardRoads.length > 0) {
+            // Prioritize actual roads over paths
+            const actualRoads = backwardRoads.filter(r => !r.isPath);
+            const pathsOnly = backwardRoads.filter(r => r.isPath);
+            
+            if (actualRoads.length > 0) {
+                // Use the first actual road
+                result.backward = {
+                    name: actualRoads[0].name,
+                    distance: startDistanceInMeters,
+                    point: startPoint
+                };
+            } else if (pathsOnly.length > 0) {
+                // Only paths available - describe them properly
+                const path = pathsOnly[0];
+                const pathName = path.name === 'Pedestrian' || path.name === 'unnamed' ? 
+                    'pedestrian path' : path.name;
+                result.backward = {
+                    name: pathName,
+                    distance: startDistanceInMeters,
+                    point: startPoint
+                };
+            }
+        } else {
+            result.backward = {
+                name: 'dead end',
+                distance: startDistanceInMeters,
+                point: startPoint
+            };
+        }
+        
+        return result;
+    }
+    
+    /**
+     * Add a debug crosshair at a specific point
+     */
+    addDebugCrosshair(point, tiles, roadElement, id) {
+        // Find which tile contains this road element to get the transform
+        let tileTransform = '';
+        let tileKey = '';
+        
+        for (const [key, tileGroup] of tiles) {
+            if (tileGroup.contains(roadElement.element)) {
+                tileTransform = tileGroup.getAttribute('transform') || '';
+                tileKey = key;
+                break;
+            }
+        }
+        
+        if (!tileTransform) return;
+        
+        // Get the overlay container from mapManager
+        const overlayContainer = this.mapManager.overlayContainer;
+        if (!overlayContainer) return;
+        
+        // Remove any existing crosshair with this ID
+        const existing = overlayContainer.querySelector(`#${id}`);
+        if (existing) {
+            existing.remove();
+        }
+        
+        // Create a crosshair group with the same transform as the tile
+        const crosshair = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        crosshair.setAttribute('id', id);
+        crosshair.setAttribute('transform', tileTransform);
+        
+        // Horizontal line
+        const hLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        hLine.setAttribute('x1', point.x - 20);
+        hLine.setAttribute('y1', point.y);
+        hLine.setAttribute('x2', point.x + 20);
+        hLine.setAttribute('y2', point.y);
+        hLine.setAttribute('stroke', 'blue');
+        hLine.setAttribute('stroke-width', '3');
+        hLine.setAttribute('opacity', '0.8');
+        
+        // Vertical line
+        const vLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        vLine.setAttribute('x1', point.x);
+        vLine.setAttribute('y1', point.y - 20);
+        vLine.setAttribute('x2', point.x);
+        vLine.setAttribute('y2', point.y + 20);
+        vLine.setAttribute('stroke', 'blue');
+        vLine.setAttribute('stroke-width', '3');
+        vLine.setAttribute('opacity', '0.8');
+        
+        // Center circle
+        const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        circle.setAttribute('cx', point.x);
+        circle.setAttribute('cy', point.y);
+        circle.setAttribute('r', '5');
+        circle.setAttribute('fill', 'blue');
+        circle.setAttribute('opacity', '0.8');
+        
+        // Add label showing tile key
+        const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        text.setAttribute('x', point.x + 25);
+        text.setAttribute('y', point.y - 25);
+        text.setAttribute('fill', 'blue');
+        text.setAttribute('font-size', '12');
+        text.setAttribute('font-weight', 'bold');
+        text.textContent = `${id} in ${tileKey}`;
+        
+        // Add elements to crosshair group
+        crosshair.appendChild(hLine);
+        crosshair.appendChild(vLine);
+        crosshair.appendChild(circle);
+        crosshair.appendChild(text);
+        
+        // Add to overlay container
+        overlayContainer.appendChild(crosshair);
+    }
+    
+    /**
+     * Clear all debug crosshairs
+     */
+    clearDebugCrosshairs() {
+        const overlayContainer = this.mapManager.overlayContainer;
+        if (!overlayContainer) return;
+        
+        const crosshairs = overlayContainer.querySelectorAll('#forward-crosshair, #backward-crosshair');
+        crosshairs.forEach(crosshair => crosshair.remove());
+    }
+    
+    /**
+     * Find roads at a specific point using the SAME logic as pin location detection
+     */
+    findRoadsAtPoint(point, tiles, currentRoadElement) {
+        const SEARCH_RADIUS = 50; // meters - same as generateFlowingDescription
+        const foundElements = [];
+        
+        console.log(`  Searching for roads within ${SEARCH_RADIUS}m of point (${point.x.toFixed(1)}, ${point.y.toFixed(1)})`);
+        
+        // Find which tile contains this road to get the proper coordinate conversion
+        let currentTileKey = null;
+        for (const [tileKey, tileGroup] of tiles) {
+            if (tileGroup.contains(currentRoadElement.element)) {
+                currentTileKey = tileKey;
+                break;
+            }
+        }
+        
+        if (!currentTileKey) {
+            console.log(`  Warning: Could not find tile containing the road element`);
+            return [];
+        }
+        
+        // Convert the point back to lat/lng
+        const [currentTileLat, currentTileLng] = currentTileKey.split('_').map(parseFloat);
+        const pointLat = currentTileLat + 0.01 - (point.y / 1000) * 0.01;
+        const pointLng = currentTileLng + (point.x / 1000) * 0.01;
+        
+        console.log(`  Point lat/lng: ${pointLat.toFixed(6)}, ${pointLng.toFixed(6)}`);
+        
+        // Now use EXACT same code as generateFlowingDescription to find roads
+        for (const [tileKey, tileGroup] of tiles) {
+            const [tileLat, tileLng] = tileKey.split('_').map(parseFloat);
+            
+            // Convert point to SVG coordinates within this tile
+            const svgX = ((pointLng - tileLng) / 0.01) * 1000;
+            const svgY = ((tileLat + 0.01 - pointLat) / 0.01) * 1000;
+            
+            // Check if we're within this tile
+            if (svgX >= 0 && svgX <= 1000 && svgY >= 0 && svgY <= 1000) {
+                // Get all elements - same as generateFlowingDescription
+                const allElements = tileGroup.querySelectorAll('path, polyline, polygon, g');
+                
+                allElements.forEach(element => {
+                    try {
+                        // Get element info - same as generateFlowingDescription
+                        const tagName = element.tagName;
+                        const classes = element.getAttribute('class') || element.getAttribute('class-') || '';
+                        
+                        // Only include actual road/path elements
+                        const isRoad = classes.match(/\b(road|highway|street|footway|cycleway|path|pedestrian)\b/);
+                        const isArtifact = classes.includes('casing') || classes.includes('outline') || classes.includes('border');
+                        if (!isRoad || isArtifact) {
+                            return;
+                        }
+                        
+                        // Skip the current road element
+                        if (element === currentRoadElement.element) return;
+                        
+                        const id = element.getAttribute('id') || '';
+                        // Extract name from title element
+                        const titleElement = element.querySelector('title');
+                        let name = '';
+                        if (titleElement && titleElement.textContent) {
+                            const titleParts = titleElement.textContent.split(',');
+                            name = titleParts[0].trim();
+                        }
+                        if (!name) {
+                            name = element.getAttribute('data-name') || 
+                                   element.getAttribute('name') || '';
+                        }
+                        
+                        // Parse geometry
+                        const geometry = this.geometryParser.parseElement(element);
+                        if (geometry && geometry.points.length > 0) {
+                            // Calculate distance
+                            const centerPoint = { x: svgX, y: svgY };
+                            let distance;
+                            
+                            if (geometry.type === 'polygon') {
+                                distance = this.geometryCalculator.pointToPolygonDistance(centerPoint, geometry.points);
+                            } else if (geometry.type === 'polyline') {
+                                distance = this.geometryCalculator.pointToPolylineDistance(centerPoint, geometry.points);
+                            } else {
+                                distance = this.geometryCalculator.pointToPointDistance(centerPoint, geometry.points[0]);
+                            }
+                            
+                            // Convert SVG units to meters
+                            const distanceInMeters = distance * 1.11;
+                            
+                            if (distanceInMeters <= SEARCH_RADIUS) {
+                                foundElements.push({
+                                    tag: tagName,
+                                    classes: classes,
+                                    id: id,
+                                    name: name,
+                                    distance: distanceInMeters.toFixed(1),
+                                    geometryType: geometry.type,
+                                    pointCount: geometry.points.length,
+                                    element: element,
+                                    geometry: geometry
+                                });
+                            }
+                        }
+                    } catch (e) {
+                        // Skip elements that cause errors
+                    }
+                });
+            }
+        }
+        
+        // Sort by distance
+        foundElements.sort((a, b) => parseFloat(a.distance) - parseFloat(b.distance));
+        
+        // Filter for elements within 10m
+        const nearestElements = foundElements.filter(el => parseFloat(el.distance) <= 10);
+        
+        // Separate into roads and paths
+        const vehicleRoads = [];
+        const pedestrianPaths = [];
+        
+        nearestElements.forEach(el => {
+            const classes = el.classes.toLowerCase();
+            
+            // Check if it's a footpath/pedestrian way
+            if (classes.includes('footway') || classes.includes('footpath') || 
+                classes.includes('pedestrian') || classes.includes('steps') || 
+                classes.includes('cycleway')) {
+                pedestrianPaths.push(el);
+            }
+            // Check if it's a vehicle road
+            else if (classes.includes('primary') || classes.includes('secondary') || 
+                     classes.includes('tertiary') || classes.includes('residential') ||
+                     classes.includes('road')) {
+                vehicleRoads.push(el);
+            }
+        });
+        
+        // Log what we found
+        console.log(`\nRoads within 10m:`);
+        vehicleRoads.forEach(el => {
+            console.log(`  [ROAD] ${el.name || 'unnamed'} - ${el.distance}m`);
+        });
+        
+        console.log(`\nPaths within 10m:`);
+        pedestrianPaths.forEach(el => {
+            console.log(`  [PATH] ${el.name || 'unnamed'} - ${el.distance}m`);
+        });
+        
+        // Get the base name of the current road (without directional suffixes)
+        const currentRoadName = currentRoadElement.name || '';
+        const currentBaseName = currentRoadName
+            .replace(/\s+(North|South|East|West)$/i, '')
+            .replace(/\s+(Street|Road|Avenue|Ave|St|Rd|Drive|Dr|Boulevard|Blvd)$/i, '')
+            .trim();
+        
+        // Filter out segments of the same street
+        const filteredRoads = [...vehicleRoads, ...pedestrianPaths].filter(el => {
+            const roadBaseName = (el.name || '')
+                .replace(/\s+(North|South|East|West)$/i, '')
+                .replace(/\s+(Street|Road|Avenue|Ave|St|Rd|Drive|Dr|Boulevard|Blvd)$/i, '')
+                .trim();
+            
+            // Keep the road if it has a different base name than the current road
+            return roadBaseName !== currentBaseName || roadBaseName === '';
+        });
+        
+        // Return filtered roads
+        return filteredRoads.map(el => ({
+            name: (el.name || 'unnamed').replace(/\s+(Street|Road|Avenue|Ave|St|Rd|Drive|Dr|Boulevard|Blvd)$/i, ''),
+            distance: parseFloat(el.distance),
+            element: el.element,
+            isPath: el.classes.toLowerCase().includes('footway') || 
+                    el.classes.toLowerCase().includes('footpath') ||
+                    el.classes.toLowerCase().includes('pedestrian')
+        }));
+    }
+    
+    /**
+     * [DEPRECATED] Find cross street in a specific direction along a polyline
+     * This method is no longer used - replaced by findRoadsAtPoint
+     */
+    findCrossStreetInDirection(polyline, startIndex, endIndex, otherRoads, userPoint, reverse = false) {
+        const step = reverse ? -1 : 1;
+        let cumulativeDistance = 0;
+        let previousPoint = polyline[startIndex];
+        
+        console.log(`\nSearching for cross streets ${reverse ? 'backward' : 'forward'} from segment index ${startIndex}`);
+        console.log(`Total other roads to check: ${otherRoads.length}`);
+        
+        // Keep track of roads we find at each point
+        const foundRoadsAtPoint = new Map();
+        
+        for (let i = startIndex; reverse ? i >= endIndex : i < endIndex; i += step) {
+            const currentPoint = polyline[i];
+            
+            // Add distance from previous point
+            if (i !== startIndex) {
+                const segmentDistance = this.geometryCalculator.pointToPointDistance(previousPoint, currentPoint);
+                cumulativeDistance += segmentDistance;
+            }
+            
+            // Find all roads within 10m of this point (same as our intersection detection)
+            const roadsAtPoint = [];
+            for (const road of otherRoads) {
+                if (road.geometry && road.geometry.type === 'polyline') {
+                    const distance = this.geometryCalculator.pointToPolylineDistance(currentPoint, road.geometry.points);
+                    const distanceInMeters = distance * 1.11;
+                    
+                    // Use same threshold as intersection detection (10m)
+                    if (distanceInMeters < 10) {
+                        roadsAtPoint.push({
+                            road: road,
+                            distance: distanceInMeters
+                        });
+                    }
+                }
+            }
+            
+            // Debug: Show what we found at this point
+            if (roadsAtPoint.length > 0 || i === startIndex || 
+                (reverse && i === 0) || (!reverse && i === polyline.length - 1)) {
+                console.log(`Point ${i}: Found ${roadsAtPoint.length} roads within 10m`);
+                roadsAtPoint.forEach(r => {
+                    console.log(`  - ${r.road.name} at ${r.distance.toFixed(1)}m`);
+                });
+            }
+            
+            // If we found roads at this point, check for intersection
+            if (roadsAtPoint.length > 0) {
+                // Get unique road names
+                const uniqueRoadNames = new Set(roadsAtPoint.map(r => r.road.name));
+                
+                console.log(`  Unique road names: ${Array.from(uniqueRoadNames).join(', ')}`);
+                
+                // If there's at least one road different from our current road
+                if (uniqueRoadNames.size > 0) {
+                    // Calculate actual distance from user to intersection
+                    const userToIntersection = this.geometryCalculator.pointToPointDistance(userPoint, currentPoint);
+                    const distanceInMeters = userToIntersection * 1.11; // Convert SVG units to meters
+                    
+                    // Get the closest/most prominent cross road
+                    const closestRoad = roadsAtPoint.sort((a, b) => a.distance - b.distance)[0].road;
+                    
+                    // Clean the road name
+                    const cleanName = closestRoad.name.replace(/\s+(Street|Road|Avenue|Ave|St|Rd|Drive|Dr|Boulevard|Blvd)$/i, '');
+                    
+                    console.log(`  Found intersection with ${cleanName} at ${Math.round(distanceInMeters)}m`);
+                    
+                    return {
+                        name: cleanName,
+                        distance: Math.round(distanceInMeters),
+                        point: currentPoint
+                    };
+                }
+            }
+            
+            previousPoint = currentPoint;
+        }
+        
+        // No cross street found - it's a dead end
+        const endPoint = polyline[reverse ? 0 : polyline.length - 1];
+        const userToEnd = this.geometryCalculator.pointToPointDistance(userPoint, endPoint);
+        const distanceInMeters = userToEnd * 1.11;
+        
+        console.log(`  No intersection found - dead end at ${Math.round(distanceInMeters)}m`);
+        
+        return {
+            name: 'dead end',
+            distance: Math.round(distanceInMeters),
+            point: endPoint
+        };
+    }
+    
+    /**
+     * Find all roads near a point across all tiles
+     */
+    findAllNearbyRoads(centerPoint, tiles, radiusMeters) {
+        const foundRoads = [];
+        const radiusSvg = radiusMeters / 1.11; // Convert meters to SVG units
+        
+        // Search all tiles
+        for (const [tileKey, tileGroup] of tiles) {
+            const [tileLat, tileLng] = tileKey.split('_').map(parseFloat);
+            
+            // Get all road elements in this tile
+            const allElements = tileGroup.querySelectorAll('path, polyline, polygon');
+            
+            allElements.forEach(element => {
+                const classes = element.getAttribute('class') || '';
+                
+                // Only include actual roads
+                const isRoad = classes.match(/\b(road|highway|street)\b/) && 
+                              !classes.match(/\b(footway|cycleway|pedestrian|steps)\b/);
+                const isArtifact = classes.includes('casing') || classes.includes('outline');
+                
+                if (!isRoad || isArtifact) return;
+                
+                // Get name
+                const titleElement = element.querySelector('title');
+                let name = '';
+                if (titleElement && titleElement.textContent) {
+                    name = titleElement.textContent.split(',')[0].trim();
+                }
+                
+                if (!name) return;
+                
+                // Parse geometry
+                const geometry = this.geometryParser.parseElement(element);
+                if (geometry && geometry.points.length > 0) {
+                    foundRoads.push({
+                        name: name,
+                        element: element,
+                        geometry: geometry,
+                        classes: classes
+                    });
+                }
+            });
+        }
+        
+        return foundRoads;
     }
     
     /**
