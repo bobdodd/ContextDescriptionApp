@@ -31,3 +31,8 @@ Thumbs.db
 # Local development
 .env
 .env.local
+# Ignore reference files and temporary content
+original/
+Screenshot*.png
+*.md
+!README.md

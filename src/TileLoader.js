@@ -56,11 +56,7 @@ export class TileLoader {
      */
     async fetchTile(url, tileKey) {
         try {
-            const response = await fetch(url, {
-                headers: {
-                    'Accept-Encoding': 'gzip'
-                }
-            });
+            const response = await fetch(url);
             
             if (!response.ok) {
                 if (response.status === 404) {
@@ -70,9 +66,54 @@ export class TileLoader {
                 throw new Error(`HTTP ${response.status}: ${response.statusText}`);
             }
             
-            // Get the response as text
-            // The server should handle gzip decompression via Content-Encoding header
-            const svgContent = await response.text();
+            // Get the response as array buffer for manual decompression
+            const arrayBuffer = await response.arrayBuffer();
+            
+            // Decompress gzipped content
+            let svgContent;
+            
+            // Check if DecompressionStream is available (modern browsers)
+            if (typeof DecompressionStream !== 'undefined') {
+                try {
+                    const stream = new DecompressionStream('gzip');
+                    const writer = stream.writable.getWriter();
+                    const reader = stream.readable.getReader();
+                    
+                    // Write the compressed data
+                    writer.write(new Uint8Array(arrayBuffer));
+                    writer.close();
+                    
+                    // Read the decompressed data
+                    const chunks = [];
+                    let result;
+                    while (!(result = await reader.read()).done) {
+                        chunks.push(result.value);
+                    }
+                    
+                    // Convert to string
+                    const decoder = new TextDecoder();
+                    svgContent = decoder.decode(new Uint8Array(chunks.reduce((acc, chunk) => [...acc, ...chunk], [])));
+                } catch (decompressionError) {
+                    console.error(`Failed to decompress tile ${tileKey} with DecompressionStream:`, decompressionError);
+                    return null;
+                }
+            } else {
+                // Fallback: Use pako library for gzip decompression
+                if (typeof pako !== 'undefined') {
+                    try {
+                        const uint8Array = new Uint8Array(arrayBuffer);
+                        const decompressed = pako.ungzip(uint8Array);
+                        const decoder = new TextDecoder();
+                        svgContent = decoder.decode(decompressed);
+                    } catch (pakoError) {
+                        console.error(`Failed to decompress tile ${tileKey} with pako:`, pakoError);
+                        return null;
+                    }
+                } else {
+                    console.error(`No gzip decompression available for tile ${tileKey}. DecompressionStream and pako are both unavailable.`);
+                    return null;
+                }
+            }
             
             // Validate SVG content
             if (!svgContent.includes('<svg') && !svgContent.includes('<g')) {

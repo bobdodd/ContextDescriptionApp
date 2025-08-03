@@ -33,9 +33,9 @@ class WhereAmIApp {
         
         // Configuration
         this.config = {
-            tileBaseUrl: '/maps/tiles/',
+            tileBaseUrl: 'https://bobd77.sg-host.com/tiles/',
             defaultCenter: { lat: 43.65, lng: -79.38 }, // Toronto
-            testLocation: { lat: 43.6486, lng: -79.3782 }, // Yonge & Front intersection
+            testLocation: { lat: 43.640, lng: -79.380 }, // Downtown Toronto (matches available tile)
             defaultZoom: 16, // Standard zoom level
             minZoom: 10, // Minimum zoom level (zoomed out)
             maxZoom: 20, // Maximum zoom level (zoomed in)
