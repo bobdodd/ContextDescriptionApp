@@ -75,6 +75,9 @@ export class MapManager extends EventTarget {
         
         // Click for selection
         this.svg.addEventListener('click', this.handleClick.bind(this));
+        
+        // Double-click for coordinate debugging
+        this.svg.addEventListener('dblclick', this.handleDoubleClick.bind(this));
     }
     
     /**
@@ -326,7 +329,7 @@ export class MapManager extends EventTarget {
     handleClick(event) {
         if (this.isDragging) return;
         
-        // Check if Shift key is held
+        // Check if Shift key is held for pin movement
         if (event.shiftKey) {
             // Get click position in SVG coordinates
             const pt = this.svg.createSVGPoint();
@@ -336,15 +339,17 @@ export class MapManager extends EventTarget {
             const svgP = pt.matrixTransform(this.svg.getScreenCTM().inverse());
             
             // Convert to lat/lng
-            let lat = this.pixelToLat(svgP.y);
-            let lng = this.pixelToLng(svgP.x);
+            let rawLat = this.pixelToLat(svgP.y);
+            let rawLng = this.pixelToLng(svgP.x);
             
-            // Reverse the offset that will be applied in updateLocationMarker
-            // This ensures the pin appears exactly where the user clicked
-            const offsetLat = -0.001725;  // Move south
-            const offsetLng = 0.001225;   // Move east
-            lat = lat - offsetLat;  // Subtract the offset to compensate
-            lng = lng - offsetLng;  // Subtract the offset to compensate
+            // Shift+click: Move pin with offset compensation
+            let lat = rawLat;
+            let lng = rawLng;
+            
+            // No offset compensation needed since updateLocationMarker has no offset
+            
+            console.log(`Offset-compensated lat/lng: (${lat.toFixed(6)}, ${lng.toFixed(6)})`);
+            console.log('============================');
             
             // Update marker location
             this.updateLocationMarker(lat, lng);
@@ -357,6 +362,36 @@ export class MapManager extends EventTarget {
             event.preventDefault();
             event.stopPropagation();
         }
+    }
+    
+    /**
+     * Handle double-click for coordinate debugging
+     */
+    handleDoubleClick(event) {
+        // Get click position in SVG coordinates
+        const pt = this.svg.createSVGPoint();
+        pt.x = event.clientX;
+        pt.y = event.clientY;
+        
+        const svgP = pt.matrixTransform(this.svg.getScreenCTM().inverse());
+        
+        // Convert to lat/lng
+        let rawLat = this.pixelToLat(svgP.y);
+        let rawLng = this.pixelToLng(svgP.x);
+        
+        // Debug info for coordinate analysis
+        console.log('=== COORDINATE DEBUG INFO ===');
+        console.log(`Screen coordinates: (${event.clientX}, ${event.clientY})`);
+        console.log(`SVG coordinates: (${svgP.x.toFixed(2)}, ${svgP.y.toFixed(2)})`);
+        console.log(`Raw lat/lng: (${rawLat.toFixed(6)}, ${rawLng.toFixed(6)})`);
+        console.log(`COPY THIS: ${rawLat.toFixed(6)}, ${rawLng.toFixed(6)}`);
+        console.log('============================');
+        
+        // Show alert with coordinates
+        alert(`Double-click captured:\nLat: ${rawLat.toFixed(6)}\nLng: ${rawLng.toFixed(6)}\nSVG: (${svgP.x.toFixed(2)}, ${svgP.y.toFixed(2)})`);
+        
+        event.preventDefault();
+        event.stopPropagation();
     }
     
     /**
@@ -493,13 +528,9 @@ export class MapManager extends EventTarget {
         // Store the actual location for centering
         this.markerLocation = { lat, lng };
         
-        // Apply the offset for visual alignment with tiles
-        const offsetLat = -0.001725;  // Move south
-        const offsetLng = 0.001225;   // Move east
-        
-        // Calculate position in map coordinates with offset
-        const correctedX = this.lngToPixel(lng + offsetLng);
-        const correctedY = this.latToPixel(lat + offsetLat);
+        // Calculate position in map coordinates (no offset for now)
+        const correctedX = this.lngToPixel(lng);
+        const correctedY = this.latToPixel(lat);
         
         // Create pin shape
         this.locationMarker = document.createElementNS('http://www.w3.org/2000/svg', 'g');

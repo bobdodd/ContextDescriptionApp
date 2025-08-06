@@ -83,6 +83,7 @@ export class DescriptionGenerator {
         };
         
         // If no features found, provide a basic description
+        console.log(`DescriptionGenerator: Found ${features.length} features in area`);
         if (features.length === 0) {
             description.title = 'Current Location';
             description.summary = 'Loading map data...';
@@ -90,11 +91,41 @@ export class DescriptionGenerator {
             return description;
         }
         
-        // Generate flowing description
+        // Build rich, sectioned description
+        const sections = [];
+        
+        // Add landmark/location description section
+        const landmarkSection = this.describeLandmarks(features, options.detailLevel || 'medium', zones);
+        if (landmarkSection && landmarkSection.content) {
+            sections.push(landmarkSection);
+        }
+        
+        // Add transit information section  
+        const transitSection = this.describeTransit(features, options.detailLevel || 'medium', zones);
+        if (transitSection && transitSection.content) {
+            sections.push(transitSection);
+        }
+        
+        // Add accessibility section
+        const accessibilitySection = this.describeAccessibility(features, options.detailLevel || 'medium');
+        if (accessibilitySection && accessibilitySection.content) {
+            sections.push(accessibilitySection);
+        }
+        
+        // Add amenities section
+        const amenitiesSection = this.describeAmenities(features, options.detailLevel || 'medium');  
+        if (amenitiesSection && amenitiesSection.content) {
+            sections.push(amenitiesSection);
+        }
+        
+        // Generate main summary from flowing description for location context
         const flowingDesc = this.generateFlowingDescription(area, features, zones);
         
-        // For simplified version, just return the flowing description directly
-        return flowingDesc;
+        // Build final description object
+        description.sections = sections;
+        description.summary = flowingDesc.summary || `Location: ${area.center.lat.toFixed(4)}, ${area.center.lng.toFixed(4)}`;
+        
+        return description;
     }
     
     /**
@@ -119,7 +150,8 @@ export class DescriptionGenerator {
         for (const [tileKey, tileGroup] of tiles) {
             const [tileLat, tileLng] = tileKey.split('_').map(parseFloat);
             
-            // Convert center to SVG coordinates within this tile
+            // Convert center to tile-relative SVG coordinates
+            // Tile covers tileLat to (tileLat+0.01) and tileLng to (tileLng+0.01)
             const svgX = ((area.center.lng - tileLng) / 0.01) * 1000;
             const svgY = ((tileLat + 0.01 - area.center.lat) / 0.01) * 1000;
             
@@ -1255,11 +1287,13 @@ export class DescriptionGenerator {
             
             // Get tiles in bounds
             const tiles = this.mapManager.loadedTiles;
-            
+            console.log(`DescriptionGenerator: ${tiles.size} tiles loaded in MapManager`);
             
             // Extract features from tiles
             for (const [key, tileGroup] of tiles) {
-                const tileFeatures = this.extractFeaturesFromTile(tileGroup, bounds, key);
+                console.log(`DescriptionGenerator: Processing tile ${key}`);
+                const tileFeatures = this.extractFeaturesFromTileNew(tileGroup, bounds, key);
+                console.log(`DescriptionGenerator: Extracted ${tileFeatures.length} features from tile ${key}`);
                 features.push(...tileFeatures);
             }
             
@@ -1508,6 +1542,209 @@ export class DescriptionGenerator {
     }
     
     /**
+     * Extract features from a tile SVG (new implementation)
+     */
+    extractFeaturesFromTileNew(tileGroup, bounds, tileKey) {
+        const features = [];
+        
+        // Parse tile coordinates from key (e.g., "43.648_-79.378")
+        let tileLat = 0, tileLng = 0;
+        if (tileKey) {
+            const parts = tileKey.split('_');
+            tileLat = parseFloat(parts[0]);
+            tileLng = parseFloat(parts[1]);
+        }
+        
+        // The SVG tiles have a specific structure:
+        // <g id="roads" class="feature-group roads">
+        //   <g><title>Street Name, road</title><path.../><path.../></g>
+        // </g>
+        // <g id="buildings" class="feature-group buildings">
+        //   <polygon title="Building Name">...</polygon>
+        // </g>
+        
+        // Process roads
+        const roadsGroup = tileGroup.querySelector('#roads');
+        console.log(`  Found roads group: ${!!roadsGroup}`);
+        if (roadsGroup) {
+            const roadElements = roadsGroup.querySelectorAll('g');
+            console.log(`  Found ${roadElements.length} road elements`);
+            roadElements.forEach(roadGroup => {
+                const titleElement = roadGroup.querySelector('title');
+                if (titleElement && titleElement.textContent) {
+                    const titleText = titleElement.textContent.trim();
+                    let name = titleText;
+                    let type = 'highway';
+                    
+                    // Parse title like "Lake Shore Boulevard West, road" or "King Street East, road"
+                    if (titleText.includes(', road')) {
+                        name = titleText.replace(', road', '').trim();
+                        type = 'highway:secondary'; // Default road type
+                    } else if (titleText === 'Road') {
+                        name = '';
+                        type = 'highway:unclassified';
+                    }
+                    
+                    // Find the path elements for this road
+                    const pathElements = roadGroup.querySelectorAll('path[role="img"]');
+                    pathElements.forEach(pathElement => {
+                        const geometry = this.parseElementGeometry(pathElement, tileLat, tileLng);
+                        if (geometry && geometry.coordinates.length > 0) {
+                            features.push({
+                                type: type,
+                                name: name,
+                                geometry: geometry.coordinates,
+                                geometryType: geometry.type === 'LineString' ? 'polyline' : geometry.type.toLowerCase(),
+                                element: pathElement,
+                                tileKey: tileKey,
+                                tileLat: tileLat,
+                                tileLng: tileLng,
+                                id: roadGroup.getAttribute('id') || '',
+                                accessibility: { wheelchair: 'unknown' }
+                            });
+                        }
+                    });
+                }
+            });
+        }
+        
+        // Process buildings
+        const buildingsGroup = tileGroup.querySelector('#buildings');
+        if (buildingsGroup) {
+            const buildingElements = buildingsGroup.querySelectorAll('polygon, rect');
+            buildingElements.forEach(buildingElement => {
+                const title = buildingElement.getAttribute('title') || 
+                             buildingElement.getAttribute('aria-label') || '';
+                const name = title.replace(', building', '').trim();
+                
+                const geometry = this.parseElementGeometry(buildingElement, tileLat, tileLng);
+                if (geometry && geometry.coordinates.length > 0) {
+                    features.push({
+                        type: 'building',
+                        name: name,
+                        geometry: geometry.coordinates,
+                        geometryType: geometry.type.toLowerCase(),
+                        element: buildingElement,
+                        tileKey: tileKey,
+                        tileLat: tileLat,
+                        tileLng: tileLng,
+                        id: buildingElement.getAttribute('id') || '',
+                        accessibility: { wheelchair: 'unknown' }
+                    });
+                }
+            });
+        }
+        
+        // Process other feature groups (amenities, shops, etc.)
+        const featureGroups = tileGroup.querySelectorAll('g[id]');
+        featureGroups.forEach(group => {
+            const groupId = group.getAttribute('id');
+            if (groupId === 'roads' || groupId === 'buildings') {
+                return; // Already processed above
+            }
+            
+            // Convert group ID to feature type (e.g., 'amenities' -> 'amenity')
+            let featureType = groupId;
+            if (featureType.endsWith('s')) {
+                featureType = featureType.slice(0, -1);
+            }
+            
+            // Process elements in this group
+            const elements = group.querySelectorAll('circle, polygon, rect, path');
+            elements.forEach(element => {
+                const title = element.getAttribute('title') || 
+                             element.getAttribute('aria-label') || '';
+                const name = title.replace(new RegExp(`, ${featureType}`, 'i'), '').trim();
+                
+                const geometry = this.parseElementGeometry(element, tileLat, tileLng);
+                if (geometry && geometry.coordinates.length > 0) {
+                    features.push({
+                        type: featureType,
+                        name: name,
+                        geometry: geometry.coordinates,
+                        geometryType: geometry.type === 'LineString' ? 'polyline' : geometry.type.toLowerCase(),
+                        element: element,
+                        tileKey: tileKey,
+                        tileLat: tileLat,
+                        tileLng: tileLng,
+                        id: element.getAttribute('id') || '',
+                        accessibility: { wheelchair: 'unknown' }
+                    });
+                }
+            });
+        });
+        
+        return features;
+    }
+    
+    /**
+     * Parse element geometry for distance calculations
+     */
+    parseElementGeometry(element, tileLat, tileLng) {
+        try {
+            const tagName = element.tagName.toLowerCase();
+            
+            if (tagName === 'path') {
+                const d = element.getAttribute('d');
+                if (d) {
+                    const points = this.geometryParser.parsePathData(d);
+                    if (points.length > 0) {
+                        return {
+                            type: 'LineString',
+                            coordinates: points.map(p => [p.x, p.y])
+                        };
+                    }
+                }
+            } else if (tagName === 'polygon') {
+                const points = element.getAttribute('points');
+                if (points) {
+                    const coords = points.split(/[\s,]+/).filter(p => p).map(parseFloat);
+                    const coordPairs = [];
+                    for (let i = 0; i < coords.length; i += 2) {
+                        if (i + 1 < coords.length) {
+                            coordPairs.push([coords[i], coords[i + 1]]);
+                        }
+                    }
+                    if (coordPairs.length > 0) {
+                        return {
+                            type: 'Polygon',
+                            coordinates: [coordPairs]
+                        };
+                    }
+                }
+            } else if (tagName === 'circle') {
+                const cx = parseFloat(element.getAttribute('cx') || 0);
+                const cy = parseFloat(element.getAttribute('cy') || 0);
+                return {
+                    type: 'Point',
+                    coordinates: [cx, cy]
+                };
+            } else if (tagName === 'rect') {
+                const x = parseFloat(element.getAttribute('x') || 0);
+                const y = parseFloat(element.getAttribute('y') || 0);
+                const width = parseFloat(element.getAttribute('width') || 0);
+                const height = parseFloat(element.getAttribute('height') || 0);
+                
+                const coords = [
+                    [x, y],
+                    [x + width, y],
+                    [x + width, y + height],
+                    [x, y + height],
+                    [x, y]
+                ];
+                return {
+                    type: 'Polygon',
+                    coordinates: [coords]
+                };
+            }
+        } catch (error) {
+            console.error('Error parsing element geometry:', error);
+        }
+        
+        return null;
+    }
+    
+    /**
      * Get feature type from class name
      */
     getFeatureTypeFromClass(element) {
@@ -1545,27 +1782,45 @@ export class DescriptionGenerator {
         
         // If we have geometry, use proper geometric distance calculation
         if (feature.geometry && feature.geometryType && feature.geometry.length > 0) {
-            // First, we need to calculate the center point in SVG coordinates
-            const centerSVGX = ((center.lng - feature.tileLng) / tileSize) * svgSize;
-            const centerSVGY = ((feature.tileLat + tileSize - center.lat) / tileSize) * svgSize;
+            // Convert center to global MapManager coordinate system
+            const centerSVGX = center.lng * 100 * 1000;
+            const centerSVGY = -center.lat * 100 * 1000;
             const centerPoint = { x: centerSVGX, y: centerSVGY };
+            
+            // Debug first few features to see coordinate conversion
+            if (Math.random() < 0.001 && feature.name) { 
+                console.log(`Distance calc for ${feature.name}:`);
+                console.log(`  Center: (${center.lat}, ${center.lng}) -> SVG(${centerSVGX}, ${centerSVGY})`);
+                console.log(`  Feature tile: (${feature.tileLat}, ${feature.tileLng})`);
+                console.log(`  Feature geometry sample:`, feature.geometry.slice(0, 2));
+            }
+            
+            // Convert feature geometry from tile-relative to global coordinates
+            // Each tile is 1000 SVG units covering 0.01 degrees
+            // Tile (43.64, -79.39) covers lat 43.64-43.65, lng -79.39 to -79.38
+            const tileSVGX = feature.tileLng * 100 * 1000;  // Tile's left edge in global coords
+            const tileSVGY = -(feature.tileLat + 0.01) * 100 * 1000;  // Tile's top edge in global coords (inverted Y)
+            
+            // Transform feature geometry to global coordinates
+            const globalGeometry = feature.geometry.map(point => ({
+                x: tileSVGX + point[0],
+                y: tileSVGY + point[1]
+            }));
             
             let distanceInSVGUnits;
             
             switch (feature.geometryType) {
                 case 'polygon':
-                    distanceInSVGUnits = this.geometryCalculator.pointToPolygonDistance(centerPoint, feature.geometry);
+                    distanceInSVGUnits = this.geometryCalculator.pointToPolygonDistance(centerPoint, globalGeometry);
                     break;
                 case 'polyline':
-                    distanceInSVGUnits = this.geometryCalculator.pointToPolylineDistance(centerPoint, feature.geometry);
+                    distanceInSVGUnits = this.geometryCalculator.pointToPolylineDistance(centerPoint, globalGeometry);
                     break;
                 case 'point':
                 default:
                     // For points, use the simple distance to the point
-                    if (feature.geometry[0]) {
-                        distanceInSVGUnits = this.geometryCalculator.pointToPointDistance(centerPoint, feature.geometry[0]);
-                    } else if (feature.position) {
-                        distanceInSVGUnits = this.geometryCalculator.pointToPointDistance(centerPoint, feature.position);
+                    if (globalGeometry[0]) {
+                        distanceInSVGUnits = this.geometryCalculator.pointToPointDistance(centerPoint, globalGeometry[0]);
                     } else {
                         return 999999;
                     }

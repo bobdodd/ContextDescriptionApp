@@ -35,7 +35,7 @@ class WhereAmIApp {
         this.config = {
             tileBaseUrl: 'https://bobd77.sg-host.com/tiles/',
             defaultCenter: { lat: 43.65, lng: -79.38 }, // Toronto
-            testLocation: { lat: 43.640, lng: -79.380 }, // Downtown Toronto (matches available tile)
+            testLocation: { lat: 43.6469, lng: -79.3769 }, // Yonge & Front intersection
             defaultZoom: 16, // Standard zoom level
             minZoom: 10, // Minimum zoom level (zoomed out)
             maxZoom: 20, // Maximum zoom level (zoomed in)
@@ -285,19 +285,16 @@ class WhereAmIApp {
             // Get description options
             const options = this.uiController.getDescriptionOptions();
             
-            // Generate description for current location
-            // Apply the same offset as the visual pin to match tile alignment
-            const offsetLat = -0.001725;  // Move south (same as pin offset)
-            const offsetLng = 0.001225;   // Move east (same as pin offset)
-            
+            // Generate description for current location (no offset since pin has no offset)
             const area = {
                 center: {
-                    lat: this.currentLocation.lat + offsetLat,
-                    lng: this.currentLocation.lng + offsetLng
+                    lat: this.currentLocation.lat,
+                    lng: this.currentLocation.lng
                 },
                 radius: this.config.descriptionRadius,
                 heading: this.currentHeading || 0 // Default to north if no heading
             };
+            console.log('Description generation searching at:', area.center);
             
             // Add distance configuration to options
             options.maxDistance = this.config.maxDescriptionDistance;
@@ -350,11 +347,14 @@ class WhereAmIApp {
     async findNearestIntersection() {
         if (!this.currentLocation) return null;
         
-        // Get features from map
+        // Get features from map (no offset since pin has no offset)
+        console.log('findNearestIntersection searching at:', this.currentLocation);
         const features = await this.descriptionGenerator.getFeaturesInArea({
             center: this.currentLocation,
             radius: 50
         });
+        const sortedByDistance = features.slice(0, 5).map(f => `${f.name} (${f.distance}m)`);
+        console.log('Closest features by distance:', sortedByDistance);
         
         // Find road intersections
         const roads = features.filter(f => f.type.includes('highway') && f.name);

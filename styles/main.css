@@ -65,10 +65,11 @@ html, body {
     width: 100%;
     height: 100%;
     display: block;
-    cursor: grab;
+    cursor: default;
 }
 
-#map-svg:active {
+/* Show grabbing cursor only when actively dragging the map */
+#map-svg.dragging {
     cursor: grabbing;
 }
 

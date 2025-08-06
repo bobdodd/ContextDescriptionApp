@@ -56,7 +56,12 @@ export class TileLoader {
      */
     async fetchTile(url, tileKey) {
         try {
-            const response = await fetch(url);
+            // Add cache-busting parameter to force fresh tile downloads
+            // Use current date to ensure tiles are updated when regenerated
+            const cacheBuster = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
+            const urlWithCacheBuster = `${url}?v=${cacheBuster}`;
+            
+            const response = await fetch(urlWithCacheBuster);
             
             if (!response.ok) {
                 if (response.status === 404) {
